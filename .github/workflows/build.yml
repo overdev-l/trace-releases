@@ -93,6 +93,9 @@ jobs:
         run: python ../ci/scripts/run-stage.py typecheck pnpm typecheck
       - name: Verify update lifecycle and publishing
         run: python ../ci/scripts/run-stage.py updates pnpm verify:updates
+      - name: Select Xcode 26 SDK
+        if: runner.os == 'macOS'
+        run: sudo xcode-select -s /Applications/Xcode_26.3.app/Contents/Developer
       - name: Build native resources
         run: python ../ci/scripts/run-stage.py native pnpm prepare:desktop-package
       - name: Build application
