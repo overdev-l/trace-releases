@@ -1,0 +1,178 @@
+name: Build Trace
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: 'Private source commit SHA, or main'
+        default: main
+        required: true
+      mode:
+        description: 'Build only, unsigned preview, or signed stable release'
+        type: choice
+        options: [preview, build, stable]
+        default: preview
+permissions:
+  contents: read
+concurrency:
+  group: trace-desktop-release
+  cancel-in-progress: false
+jobs:
+  source:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.source.outputs.sha }}
+      version: ${{ steps.source.outputs.version }}
+    steps:
+      - name: Validate source selection
+        env:
+          SOURCE_REF: ${{ inputs.source_ref }}
+        run: |
+          if [[ "$SOURCE_REF" != main && ! "$SOURCE_REF" =~ ^[0-9a-f]{40}$ ]]; then
+            echo '::error::Use main or a full commit SHA.'; exit 1
+          fi
+      - uses: actions/checkout@v4
+        with:
+          repository: overdev-l/workflow-skill
+          ref: ${{ inputs.source_ref }}
+          ssh-key: ${{ secrets.TRACE_SOURCE_DEPLOY_KEY }}
+          persist-credentials: false
+      - name: Resolve immutable source and version
+        id: source
+        run: |
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          node -e 'const fs=require("fs"),v=require("./apps/desktop/package.json").version;if(!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(v))throw Error("Stable package version required");fs.appendFileSync(process.env.GITHUB_OUTPUT,`version=${v}\n`)'
+  build:
+    needs: source
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            platform: mac
+            arch: arm64
+            certificate: CSC_LINK
+            password: CSC_KEY_PASSWORD
+          - os: windows-latest
+            platform: win
+            arch: x64
+            certificate: WIN_CSC_LINK
+            password: WIN_CSC_KEY_PASSWORD
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: bash
+        working-directory: source
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: ci
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: overdev-l/workflow-skill
+          ref: ${{ needs.source.outputs.sha }}
+          ssh-key: ${{ secrets.TRACE_SOURCE_DEPLOY_KEY }}
+          persist-credentials: false
+          path: source
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.22.0'
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.32.1
+          package_json_file: source/package.json
+      - uses: actions/setup-dotnet@v4
+        if: runner.os == 'Windows'
+        with:
+          dotnet-version: '8.0.x'
+      - name: Install dependencies
+        run: python ../ci/scripts/run-stage.py install pnpm install --frozen-lockfile
+      - name: Typecheck
+        run: python ../ci/scripts/run-stage.py typecheck pnpm typecheck
+      - name: Verify update lifecycle and publishing
+        run: python ../ci/scripts/run-stage.py updates pnpm verify:updates
+      - name: Build native resources
+        run: python ../ci/scripts/run-stage.py native pnpm prepare:desktop-package
+      - name: Build application
+        run: python ../ci/scripts/run-stage.py app pnpm --filter @workflow-skill/desktop build
+      - name: Package application
+        env:
+          TRACE_RELEASE: ${{ inputs.mode == 'stable' && '1' || '0' }}
+          TRACE_RELEASE_REPOSITORY: ${{ github.repository }}
+          CSC_IDENTITY_AUTO_DISCOVERY: ${{ inputs.mode == 'stable' && 'true' || 'false' }}
+          CSC_LINK: ${{ inputs.mode == 'stable' && secrets[matrix.certificate] || '' }}
+          CSC_KEY_PASSWORD: ${{ inputs.mode == 'stable' && secrets[matrix.password] || '' }}
+          APPLE_ID: ${{ inputs.mode == 'stable' && secrets.APPLE_ID || '' }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ inputs.mode == 'stable' && secrets.APPLE_APP_SPECIFIC_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ inputs.mode == 'stable' && secrets.APPLE_TEAM_ID || '' }}
+        run: python ../ci/scripts/run-stage.py package pnpm --filter @workflow-skill/desktop exec electron-builder --${{ matrix.platform }} --${{ matrix.arch }} --config electron-builder.config.cjs --publish never
+      - name: Verify macOS signatures
+        if: runner.os == 'macOS' && inputs.mode == 'stable'
+        run: |
+          python ../ci/scripts/run-stage.py signature codesign --verify --deep --strict dist/desktop/mac-arm64/Trace.app
+          python ../ci/scripts/run-stage.py notarization spctl --assess --type execute dist/desktop/mac-arm64/Trace.app
+      - name: Verify Windows installer signature
+        if: runner.os == 'Windows' && inputs.mode == 'stable'
+        shell: pwsh
+        run: |
+          $installers = @(Get-ChildItem dist/desktop/Trace-*-win-x64.exe)
+          if ($installers.Count -ne 1) { throw 'Expected one installer' }
+          if ((Get-AuthenticodeSignature $installers[0].FullName).Status -ne 'Valid') { throw 'Invalid installer signature' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.platform }}
+          if-no-files-found: error
+          retention-days: 7
+          path: |
+            source/dist/desktop/Trace-*.dmg
+            source/dist/desktop/Trace-*.zip
+            source/dist/desktop/Trace-*.exe
+            source/dist/desktop/Trace-*.blockmap
+            source/dist/desktop/latest*.yml
+  publish:
+    needs: [source, build]
+    if: inputs.mode != 'build'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: ci
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: overdev-l/workflow-skill
+          ref: ${{ needs.source.outputs.sha }}
+          ssh-key: ${{ secrets.TRACE_SOURCE_DEPLOY_KEY }}
+          persist-credentials: false
+          path: source
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.22.0'
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.32.1
+          package_json_file: source/package.json
+      - name: Install validation dependencies
+        working-directory: source
+        run: python ../ci/scripts/run-stage.py install pnpm install --frozen-lockfile --ignore-scripts
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: desktop-*
+          merge-multiple: true
+          path: source/dist/desktop
+      - name: Validate and publish complete release
+        working-directory: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+          RELEASE_VERSION: ${{ needs.source.outputs.version }}
+          RELEASE_MODE: ${{ inputs.mode }}
+        run: |
+          args=(--dir dist/desktop --version "$RELEASE_VERSION" --repository "$RELEASE_REPOSITORY" --publish)
+          if [ "$RELEASE_MODE" = preview ]; then args+=(--preview --tag-suffix "$GITHUB_RUN_NUMBER"); fi
+          node scripts/publish-desktop-updates.mjs "${args[@]}"
