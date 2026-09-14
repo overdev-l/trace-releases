@@ -110,7 +110,11 @@ jobs:
           APPLE_ID: ${{ inputs.mode == 'stable' && secrets.APPLE_ID || '' }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ inputs.mode == 'stable' && secrets.APPLE_APP_SPECIFIC_PASSWORD || '' }}
           APPLE_TEAM_ID: ${{ inputs.mode == 'stable' && secrets.APPLE_TEAM_ID || '' }}
-        run: python ../ci/scripts/run-stage.py package pnpm --filter @workflow-skill/desktop exec electron-builder --${{ matrix.platform }} --${{ matrix.arch }} --config electron-builder.config.cjs --publish never
+        run: |
+          if [ "$TRACE_RELEASE" != 1 ]; then
+            unset CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID
+          fi
+          python ../ci/scripts/run-stage.py package pnpm --filter @workflow-skill/desktop exec electron-builder --${{ matrix.platform }} --${{ matrix.arch }} --config electron-builder.config.cjs --publish never
       - name: Verify packaged runtime and source exclusions
         env:
           TRACE_RELEASE: ${{ inputs.mode == 'stable' && '1' || '0' }}
