@@ -19,3 +19,5 @@ The source checkout uses a dedicated read-only deploy key stored as `TRACE_SOURC
 Both platforms must build successfully before a draft release is created. Only validated installers, blockmaps, and checksums are uploaded. Stable update manifests are uploaded last; the draft becomes visible only after the complete asset set is verified. Published releases are immutable.
 
 Stable signing secrets: `CSC_LINK`, `CSC_KEY_PASSWORD`, `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID`, `WIN_CSC_LINK`, `WIN_CSC_KEY_PASSWORD`. A preview is not a signed automatic-update baseline. Only grant repository write access to trusted release maintainers.
+
+Failed build logs are encrypted with RSA-OAEP/SHA-256 and AES-256-GCM before upload (one-day retention). Only the maintainer holding the matching private key can read diagnostics. Plaintext logs never leave the runner.

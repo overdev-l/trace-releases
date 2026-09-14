@@ -11,6 +11,7 @@ if os.name == 'nt' and command[0] == 'pnpm':
 with log.open('wb') as output:
     result = subprocess.run(command, stdout=output, stderr=subprocess.STDOUT)
 if result.returncode:
+    subprocess.run(['node', str(pathlib.Path(__file__).with_name('encrypt-diagnostic.mjs')), str(log)], check=True)
     codes = sorted(set(re.findall(r'\b(?:TS|CS|NETSDK|MSB|ERR_PNPM_)[A-Z0-9_]+\b', log.read_text(errors='replace'))))
     print(f'::error::{stage} failed (exit {result.returncode}); diagnostic codes: {", ".join(codes) or "none"}. Private logs are not published.')
 else:

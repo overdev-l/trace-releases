@@ -124,6 +124,14 @@ jobs:
           $installers = @(Get-ChildItem dist/desktop/Trace-*-win-x64.exe)
           if ($installers.Count -ne 1) { throw 'Expected one installer' }
           if ((Get-AuthenticodeSignature $installers[0].FullName).Status -ne 'Valid') { throw 'Invalid installer signature' }
+      - name: Upload encrypted failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostic-${{ matrix.platform }}
+          retention-days: 1
+          if-no-files-found: ignore
+          path: ${{ runner.temp }}/*.log.encrypted
       - uses: actions/upload-artifact@v4
         with:
           name: desktop-${{ matrix.platform }}
